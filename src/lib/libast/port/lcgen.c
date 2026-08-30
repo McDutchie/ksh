@@ -294,7 +294,6 @@ main(int argc, char** argv)
 	fprintf(hf, "\n");
 	fprintf(hf, "#define LC_abbreviated\t\t0x00001U\n");
 	fprintf(hf, "#define LC_checked\t\t0x00002U\n");
-	fprintf(hf, "#define LC_debug\t\t0x00004U\n");
 	fprintf(hf, "#define LC_default\t\t0x00008U\n");
 	fprintf(hf, "#define LC_defined\t\t0x00010U\n");
 	fprintf(hf, "#define LC_local\t\t0x00020U\n");
@@ -684,10 +683,13 @@ main(int argc, char** argv)
 	for (i = 0; i < language_attribute_max; i++)
 		fprintf(lf, "0,");
 	fprintf(lf, "},\n");
-	fprintf(lf, "{\"debug\",\"debug\",0,&lc_charsets[0],LC_debug,0,");
+
+	/* dummy (was debug locale; still needed for $"..." in ksh) */
+	fprintf(lf, "{\"\",\"\",0,NULL,0,0,");
 	for (i = 0; i < language_attribute_max; i++)
 		fprintf(lf, "0,");
 	fprintf(lf, "},\n");
+
 	for (lp = (Language_t*)state.language.root; lp; lp = (Language_t*)lp->link.next)
 	{
 		fprintf(lf, "{\"%s\",\"%s\",", lp->link.code, lp->name);
@@ -709,10 +711,7 @@ main(int argc, char** argv)
 	for (i = 1; i < 2 * territory_language_max; i++)
 		fprintf(lf, "0,");
 	fprintf(lf, "},\n");
-	fprintf(lf, "{\"debug\",\"debug\",LC_debug,0,&lc_languages[1],");
-	for (i = 1; i < 2 * territory_language_max; i++)
-		fprintf(lf, "0,");
-	fprintf(lf, "},\n");
+
 	fprintf(lf, "{\"eu\",\"euro\",0,0,&lc_languages[0],");
 	for (i = 1; i < 2 * territory_language_max; i++)
 		fprintf(lf, "0,");
