@@ -59,6 +59,10 @@
 # - Do not globally set the locale; these tests must pass for all locales.
 #   Tests specific to UTF-8 locales can be skipped when not in a UTF-8 locale:
 #	[[ ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} =~ [Uu][Tt][Ff]-?8 ]] && ...
+# - The tests type ^H to erase and ^X to kill, so the terminal that pty creates
+#   for them needs those characters set. They are passed to pty with the --tty
+#   option, which runs stty(1) on the pty itself, so the settings of the real
+#   terminal (if there even is one) are left alone and do not affect the tests.
 
 JOBMAX=32  # max number of parallel tests
 
@@ -70,15 +74,6 @@ Darwin | DragonFly | FreeBSD | Linux | NetBSD | MidnightBSD | OpenBSD )
 * )	warning "pty not confirmed to work correctly on this system -- tests skipped"
 	exit 0 ;;
 esac
-
-# On some systems, the stty command does not appear to work correctly on a pty pseudoterminal.
-# To avoid false regressions, we have to set 'erase' and 'kill' on the real terminal.
-if	test -t 0 2>/dev/null </dev/tty && stty_restore=$(stty -g </dev/tty)
-then	trap 'stty "$stty_restore" </dev/tty' EXIT  # note: on ksh, the EXIT trap is also triggered for termination due to a signal
-	stty erase ^H kill ^X </dev/tty >/dev/tty 2>&1
-else	warning "cannot set tty state -- tests skipped"
-	exit 0
-fi
 
 enum -i bool=(false true)
 typeset -i bgtests=0 fgtests=0 i
@@ -134,13 +129,15 @@ function tst
 		export HISTFILE=$tmp/pty_history_fg_$fgtests
 		{
 			print $1  # lineno
-			pty $debug --dialogue --messages='/dev/fd/1' --timeout=4000 2>/dev/tty "$SHELL"
+			pty $debug --dialogue --messages='/dev/fd/1' --timeout=4000 \
+				--tty='erase ^H kill ^X' "$SHELL"
 		} | chk
 	else	((bgtests++))
 		export HISTFILE=$tmp/pty_history_bg_$bgtests
 		{
 			print $1  # lineno
-			pty $debug --dialogue --messages='/dev/fd/1' --timeout=4000 2>/dev/tty "$SHELL" &
+			pty $debug --dialogue --messages='/dev/fd/1' --timeout=4000 \
+				--tty='erase ^H kill ^X' "$SHELL" &
 		} >pty_$bgtests.out
 	fi
 }
@@ -206,14 +203,18 @@ p :test-2:
 # failures under high system load, keep signalling it until it is actually
 # stopped. We can tell this by the output of the 'jobs' command as it
 # reports the process state the shell has reaped. We must run it in a
-# subshell, like the $(command substitution) below, otherwise 'jobs' would
-# consume the job state change notification that is being tested. The shell
-# only reports a job state change when it prints a prompt, so finish with a
-# null command to force the prompt that displays the notification.
-w until (jobs) >jobs$$ && [[ $(<jobs$$) =~ (Stopped|Suspend) ]]; do kill -TSTP $!; sleep 0.1; done
-w :
+# subshell, as here on the left-hand side of a pipeline, otherwise 'jobs'
+# would consume the job state change notification that is being tested.
+# The shell only reports a job state change when it prints a prompt, which
+# it does when this command line is finished.
+#     NOTE: The following command line must not contain the words 'Stopped'
+# or 'Suspended': its own terminal echo would then be matched by the 'u'
+# below, which would incorrectly succeed even if the shell never reported
+# the job state change. So search for the stems 'Stop' and 'Suspend', which
+# still match either wording of the message.
+w until (jobs) >jobs$$ && [[ $(<jobs$$) =~ (Stop|Suspend) ]]; do kill -TSTP $!; sleep 0.1; done
 u (Stopped|Suspended)
-p :test-4:
+p :test-3:
 w kill -KILL $!
 w wait
 s 100
@@ -236,10 +237,9 @@ w sleep 60 &
 u [[:digit:]]\r?\n$
 p :test-2:
 # See the comment in the POSIX sh 026(C) test above.
-w until (jobs) >jobs$$ && [[ $(<jobs$$) =~ (Stopped|Suspend) ]]; do kill -TTIN $!; sleep 0.1; done
-w :
+w until (jobs) >jobs$$ && [[ $(<jobs$$) =~ (Stop|Suspend) ]]; do kill -TTIN $!; sleep 0.1; done
 u (Stopped|Suspended) \(SIGTTIN\)
-p :test-4:
+p :test-3:
 w kill -KILL $!
 w wait
 s 100
@@ -262,10 +262,9 @@ w sleep 60 &
 u [[:digit:]]\r?\n$
 p :test-2:
 # See the comment in the POSIX sh 026(C) test above.
-w until (jobs) >jobs$$ && [[ $(<jobs$$) =~ (Stopped|Suspend) ]]; do kill -TTOU $!; sleep 0.1; done
-w :
+w until (jobs) >jobs$$ && [[ $(<jobs$$) =~ (Stop|Suspend) ]]; do kill -TTOU $!; sleep 0.1; done
 u (Stopped|Suspended) \(SIGTTOU\)
-p :test-4:
+p :test-3:
 w kill -KILL $!
 w wait
 s 100
@@ -445,6 +444,7 @@ L POSIX sh 097(C)
 # causes the current command line to be executed.
 
 d 50
+p :test-1:
 c echo ok\n
 u ^ok\r?\n$
 !
@@ -1985,6 +1985,22 @@ w print OK
 r print OK\r?\n$
 r ^OK\r?\n$
 !
+
+# Test pty as a portable replacement for script(1): its operands are assembled
+# into a command line and executed with the pseudoterminal as its standard
+# input, output and error.
+#     The standard input of pty is redirected to /dev/null so that the test
+# does not depend on whether the test suite was started from a terminal; a
+# terminal at the end of its input, read in raw mode, can write a NUL byte.
+got=$(pty "$SHELL" -c 'test -t 0 && test -t 1 && test -t 2 && echo terminal OK' </dev/null)
+e=$?
+got=${got%$'\r'}  # the \n in the $'\r\n' line-ending was already stripped by the command substitution
+exp=$'terminal OK'
+[[ e -eq 0 && $got == "$exp" ]] || err_exit "pty shell command: pseudoterminal not detected as terminal" \
+		"(expected status 0 and $(printf %q "$exp"), got status $e and $(printf %q "$got"))"
+pty "$SHELL" -c 'exit 7' </dev/null
+e=$?
+((e == 7)) || err_exit "pty: shell exit 7: expected exit status 7, got $e"
 
 # ^^^^^^ ADD NEW TESTS ABOVE THIS LINE ^^^^^^
 
